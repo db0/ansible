@@ -109,12 +109,12 @@ author:
 EXAMPLES = '''
   - name: Update scaleset info using azure_rm_resource
     azure_rm_resource:
-      resource_group: "{{ resource_group }}"
+      resource_group: myResourceGroup
       provider: compute
       resource_type: virtualmachinescalesets
-      resource_name: "{{ scaleset_name }}"
+      resource_name: myVmss
       api_version: "2017-12-01"
-      body: "{{ body }}"
+      body: { body }
 '''
 
 RETURN = '''
@@ -144,8 +144,7 @@ class AzureRMResource(AzureRMModuleBase):
         # define user inputs into argument
         self.module_arg_spec = dict(
             url=dict(
-                type='str',
-                required=False
+                type='str'
             ),
             provider=dict(
                 type='str',

@@ -69,10 +69,10 @@ author:
 EXAMPLES = '''
   - name: Get scaleset info
     azure_rm_resource_facts:
-      resource_group: "{{ resource_group }}"
+      resource_group: myResourceGroup
       provider: compute
       resource_type: virtualmachinescalesets
-      resource_name: "{{ scaleset_name }}"
+      resource_name: myVmss
       api_version: "2017-12-01"
 '''
 
@@ -102,28 +102,22 @@ class AzureRMResourceFacts(AzureRMModuleBase):
         # define user inputs into argument
         self.module_arg_spec = dict(
             url=dict(
-                type='str',
-                required=False
+                type='str'
             ),
             provider=dict(
-                type='str',
-                required=False
+                type='str'
             ),
             resource_group=dict(
-                type='str',
-                required=False
+                type='str'
             ),
             resource_type=dict(
-                type='str',
-                required=False
+                type='str'
             ),
             resource_name=dict(
-                type='str',
-                required=False
+                type='str'
             ),
             subresource=dict(
                 type='list',
-                required=False,
                 default=[]
             ),
             api_version=dict(

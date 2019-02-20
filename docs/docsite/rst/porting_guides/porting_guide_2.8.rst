@@ -17,8 +17,49 @@ This document is part of a collection on porting. The complete list of porting g
 Playbook
 ========
 
-No notable changes.
+Distribution Facts
+------------------
 
+The information returned for the ``ansible_distribution_*`` group of facts may have changed
+slightly.  Ansible 2.8 uses a new backend library for information about distributions: `nir0s/distro <https://github.com/nir0s/distro>`_. This library runs on Python-3.8 and fixes many bugs, including correcting release and version names.
+
+The two facts used in playbooks most often, ``ansible_distribution`` and ``ansible_distribution_major_version``, should not change. If you discover a change in these facts, please file a bug so we can address the
+difference.  However, other facts like ``ansible_distribution_release`` and
+``ansible_distribution_version`` may change as erroneous information gets corrected.
+
+Imports as handlers
+-------------------
+
+Beginning in version 2.8, a task cannot notify ``import_tasks`` or a static ``include`` that is specified in ``handlers``.
+
+The goal of a static import is to act as a pre-processor, where the import is replaced by the tasks defined within the imported file. When
+using an import, a task can notify any of the named tasks within the imported file, but not the name of the import itself.
+
+To achieve the results of notifying a single name but running mulitple handlers, utilize ``include_tasks``, or ``listen`` :ref:`handlers`.
+
+Jinja Undefined values
+----------------------
+
+Beginning in version 2.8, attempting to access an attribute of an Undefined value in Jinja will return another Undefined value, rather than throwing an error immediately. This means that you can now simply use
+a default with a value in a nested data structure when you don't know if the intermediate values are defined.
+
+In Ansible 2.8::
+
+    {{ foo.bar.baz | default('DEFAULT') }}
+
+In Ansible 2.7 and older::
+
+    {{ ((foo | default({})).bar | default({})).baz | default('DEFAULT') }}
+    
+    or
+    
+    {{ foo.bar.baz if (foo is defined and foo.bar is defined and foo.bar.baz is defined) else 'DEFAULT' }}
+
+Command line facts
+------------------
+
+``cmdline`` facts returned in system will be deprecated in favor of ``proc_cmdline``. This change handles special case where Kernel command line parameter
+contains multiple values with the same key.
 
 Command Line
 ============
@@ -77,6 +118,10 @@ add ``$ErrorActionPreference = "Continue"`` to the top of the module. This chang
 of the EAP that was accidentally removed in a previous release and ensure that modules are more resiliant to errors
 that may occur in execution.
 
+PowerShell module options and option choices are currently case insensitive to what is defined in the module
+specification. This behaviour is deprecated and a warning displayed to the user if a case insensitive match was found.
+A future release of Ansible will make these checks case sensitive.
+
 
 Modules removed
 ---------------
@@ -97,6 +142,8 @@ The following modules will be removed in Ansible 2.12. Please update your playbo
 * ``foreman`` use <https://github.com/theforeman/foreman-ansible-modules> instead.
 * ``katello`` use <https://github.com/theforeman/foreman-ansible-modules> instead.
 * ``github_hooks`` use :ref:`github_webhook <github_webhook_module>` and :ref:`github_webhook_facts <github_webhook_facts_module>` instead.
+* ``digital_ocean`` use :ref `digital_ocean_droplet <digital_ocean_droplet_module>` instead.
+* ``gce`` use :ref `gce_compute_instance <gce_compute_instance_module>` instead.
 
 
 Noteworthy module changes
@@ -139,8 +186,29 @@ Noteworthy module changes
   remove that workaround. To get the previous behavior when applying ``state: absent`` to a builtin kernel module,
   use ``failed_when: false`` or ``ignore_errors: true`` in your playbook.
 
+* The ``digital_ocean`` module has been deprecated in favor of modules that do not require external dependencies.
+  This allows for more flexibility and better module support.
+
+* The ``docker_service`` module was renamed to :ref:`docker_compose <docker_compose_module>`.
+
+* The ``docker_swarm_service`` module no longer sets a defaults for the following options:
+    * ``user``. Before, the default was ``root``.
+    * ``update_delay``. Before, the default was ``10``.
+    * ``update_parallelism``. Before, the default was ``1``.
+
+* ``vmware_vm_facts`` used to return dict of dict with virtual machine's facts. Ansible 2.8 and onwards will return list of dict with virtual machine's facts.
+  Please see module ``vmware_vm_facts`` documentation for example.
+
+
 Plugins
 =======
+
+* Connection plugins have been standardized to allow use of ``ansible_<conn-type>_user``
+  and ``ansible_<conn-type>_password`` variables.  Variables such as
+  ``ansible_<conn-type>_pass`` and ``ansible_<conn-type>_username`` are treated
+  with lower priority than the standardized names and may be deprecated in the
+  future.  In general, the ``ansible_user`` and ``ansible_password`` vars should
+  be used unless there is a reason to use the connection-specific variables.
 
 * The ``powershell`` shell plugin now uses ``async_dir`` to define the async path for the results file and the default
   has changed to ``%USERPROFILE%\.ansible_async``. To control this path now, either set the ``ansible_async_dir``
@@ -162,6 +230,7 @@ Plugins
   ``CLIARGS.get('tags')`` and ``CLIARGS['tags']`` work as expected but you won't be able to modify
   the cli arguments at all.
 
+* Play recap now counts ``ignored`` and ``rescued`` tasks as well as ``ok``, ``changed``, ``unreachable``, ``failed`` and ``skipped`` tasks, thanks to two additional stat counters in the ``default`` callback plugin. Tasks that fail and have ``ignore_errors: yes`` set are listed as ``ignored``. Tasks that fail and then execute a rescue section are listed as ``rescued``. Note that ``rescued`` tasks are no longer counted as ``failed`` as in Ansible 2.7 (and earlier).
 
 Porting custom scripts
 ======================
@@ -170,7 +239,7 @@ Display class
 -------------
 
 As of Ansible 2.8, the ``Display`` class is now a "singleton". Instead of using ``__main__.display`` each file should
-import and instantiate ``ansible.utils.display.Display`` on it's own.
+import and instantiate ``ansible.utils.display.Display`` on its own.
 
 **OLD** In Ansible 2.7 (and earlier) the following was used to access the ``display`` object:
 
@@ -192,4 +261,9 @@ import and instantiate ``ansible.utils.display.Display`` on it's own.
 Networking
 ==========
 
-No notable changes.
+* The ``eos_config``, ``ios_config``, and ``nxos_config`` modules have removed the deprecated
+  ``save`` and ``force`` parameters, use the ``save_when`` parameter to replicate their
+  functionality.
+
+* The ``nxos_vrf_af`` module has removed the ``safi`` paramter. This parameter was deprecated
+  in Ansible 2.4 and has had no impact on the module since then.

@@ -54,6 +54,12 @@ options:
             - Status of the action.
         choices: ['enabled', 'disabled']
         default: 'enabled'
+    pause_in_maintenance:
+        description:
+            - Whether to pause escalation during maintenance periods or not.
+            - Can be used when I(event_source=trigger).
+        type: 'bool'
+        default: true
     esc_period:
         description:
             - Default operation step duration. Must be greater than 60 seconds. Accepts seconds, time unit with suffix and user macro.
@@ -112,11 +118,15 @@ options:
                       are C(item in not supported state), C(item in normal state),
                       C(LLD rule in not supported state),
                       C(LLD rule in normal state), C(trigger in unknown state), C(trigger in normal state).
+                    - When I(type) is set to C(trigger_severity), the choices
+                      are (case-insensitive) C(not classified), C(information), C(warning), C(average), C(high), C(disaster)
+                      irrespective of user-visible names being changed in Zabbix. Defaults to C(not classified) if omitted.
                     - Besides the above options, this is usualy either the name
                       of the object or a string to compare with.
             operator:
                 description:
                     - Condition operator.
+                    - When I(type) is set to C(time_period), the choices are C(in), C(not in).
                 choices:
                     - '='
                     - '<>'
@@ -130,6 +140,18 @@ options:
                 description:
                     - Arbitrary unique ID that is used to reference the condition from a custom expression.
                     - Can only contain upper-case letters.
+                    - Required for custom expression filters.
+    eval_type:
+        description:
+            - Filter condition evaluation method.
+            - Defaults to C(andor) if conditions are less then 2 or if
+              I(formula) is not specified.
+            - Defaults to C(custom_expression) when formula is specified.
+        choices:
+            - 'andor'
+            - 'and'
+            - 'or'
+            - 'custom_expression'
     formula:
         description:
             - User-defined expression to be used for evaluating conditions of filters with a custom expression.
@@ -153,11 +175,11 @@ options:
             - Works only with >= Zabbix 3.2
     acknowledge_default_message:
         description:
-            - Acknowledge operation message text.
+            - Update operation (known as "Acknowledge operation" before Zabbix 4.0) message text.
             - Works only with >= Zabbix 3.4
     acknowledge_default_subject:
         description:
-            - Acknowledge operation message subject.
+            - Update operation (known as "Acknowledge operation" before Zabbix 4.0) message subject.
             - Works only with >= Zabbix 3.4
     operations:
         type: list
@@ -201,7 +223,7 @@ options:
             send_to_users:
                 type: list
                 description:
-                    - Users to send messages to.
+                    - Users (usernames or aliases) to send messages to.
             message:
                 description:
                     - Operation message text.
@@ -211,6 +233,20 @@ options:
             media_type:
                 description:
                     - Media type that will be used to send the message.
+            host_groups:
+                type: list
+                description:
+                    - List of host groups host should be added to.
+                    - Required when I(type=add_to_host_group) or I(type=remove_from_host_group).
+            templates:
+                type: list
+                description:
+                    - List of templates host should be linked to.
+                    - Required when I(type=link_to_template) or I(type=unlink_from_template).
+            inventory:
+                description:
+                    - Host inventory mode.
+                    - Required when I(type=set_host_inventory_mode).
             command_type:
                 description:
                     - Type of operation command.
@@ -731,7 +767,8 @@ class Action(object):
         Returns:
             dict: dictionary of specified parameters
         """
-        return {
+
+        _params = {
             'name': kwargs['name'],
             'eventsource': to_numeric_value([
                 'trigger',
@@ -753,6 +790,12 @@ class Action(object):
                 'enabled',
                 'disabled'], kwargs['status'])
         }
+        if float(self._zapi.api_version().rsplit('.', 1)[0]) >= 4.0:
+            _params['pause_suppressed'] = '1' if kwargs['pause_in_maintenance'] else '0'
+        else:
+            _params['maintenance_mode'] = '1' if kwargs['pause_in_maintenance'] else '0'
+
+        return _params
 
     def check_difference(self, **kwargs):
         """Check difference between action and user specified parameters.
@@ -884,7 +927,7 @@ class Operations(object):
             operation: operation to construct the message user
 
         Returns:
-            list: constructed operation message user or None if oprtation not found
+            list: constructed operation message user or None if operation not found
         """
         if operation.get('send_to_users') is None:
             return None
@@ -1013,7 +1056,7 @@ class Operations(object):
         return {'inventory_mode': operation.get('inventory')}
 
     def construct_the_data(self, operations):
-        """Construct the oprtation data using helper methods.
+        """Construct the operation data using helper methods.
 
         Args:
             operation: operation to construct
@@ -1200,11 +1243,11 @@ class Filter(object):
         self._zapi = zbx
         self._zapi_wrapper = zapi_wrapper
 
-    def _construct_evaltype(self, _eval, _conditions):
+    def _construct_evaltype(self, _eval_type, _formula, _conditions):
         """Construct the eval type
 
         Args:
-            _eval: zabbix condition evaluation formula
+            _formula: zabbix condition evaluation formula
             _conditions: list of conditions to check
 
         Returns:
@@ -1215,9 +1258,37 @@ class Filter(object):
                 'evaltype': '0',
                 'formula': None
             }
+        if _eval_type == 'andor':
+            return {
+                'evaltype': '0',
+                'formula': None
+            }
+        if _eval_type == 'and':
+            return {
+                'evaltype': '1',
+                'formula': None
+            }
+        if _eval_type == 'or':
+            return {
+                'evaltype': '2',
+                'formula': None
+            }
+        if _eval_type == 'custom_expression':
+            if _formula is not None:
+                return {
+                    'evaltype': '3',
+                    'formula': _formula
+                }
+            else:
+                self._module.fail_json(msg="'formula' is required when 'eval_type' is set to 'custom_expression'")
+        if _formula is not None:
+            return {
+                'evaltype': '3',
+                'formula': _formula
+            }
         return {
-            'evaltype': '3',
-            'formula': _eval
+            'evaltype': '0',
+            'formula': None
         }
 
     def _construct_conditiontype(self, _condition):
@@ -1381,12 +1452,12 @@ class Filter(object):
         except Exception as e:
             self._module.fail_json(
                 msg="""Unsupported value '%s' for specified condition type.
-                       Check out Zabbix API documetation for supported values for
+                       Check out Zabbix API documentation for supported values for
                        condition type '%s' at
                        https://www.zabbix.com/documentation/3.4/manual/api/reference/action/object#action_filter_condition""" % (value, conditiontype)
             )
 
-    def construct_the_data(self, _formula, _conditions):
+    def construct_the_data(self, _eval_type, _formula, _conditions):
         """Construct the user defined filter conditions to fit the Zabbix API
         requirements operations data using helper methods.
 
@@ -1411,6 +1482,7 @@ class Filter(object):
                 "operator": self._construct_operator(cond)
             })
         _constructed_evaltype = self._construct_evaltype(
+            _eval_type,
             _formula,
             constructed_data['conditions']
         )
@@ -1550,6 +1622,7 @@ def main():
             event_source=dict(type='str', required=True, choices=['trigger', 'discovery', 'auto_registration', 'internal']),
             state=dict(type='str', required=False, default='present', choices=['present', 'absent']),
             status=dict(type='str', required=False, default='enabled', choices=['enabled', 'disabled']),
+            pause_in_maintenance=dict(type='bool', required=False, default=True),
             default_message=dict(type='str', required=False, default=None),
             default_subject=dict(type='str', required=False, default=None),
             recovery_default_message=dict(type='str', required=False, default=None),
@@ -1558,6 +1631,7 @@ def main():
             acknowledge_default_subject=dict(type='str', required=False, default=None),
             conditions=dict(type='list', required=False, default=None),
             formula=dict(type='str', required=False, default=None),
+            eval_type=dict(type='str', required=False, default=None, choices=['andor', 'and', 'or', 'custom_expression']),
             operations=dict(type='list', required=False, default=None),
             recovery_operations=dict(type='list', required=False, default=[]),
             acknowledge_operations=dict(type='list', required=False, default=[])
@@ -1580,6 +1654,7 @@ def main():
     event_source = module.params['event_source']
     state = module.params['state']
     status = module.params['status']
+    pause_in_maintenance = module.params['pause_in_maintenance']
     default_message = module.params['default_message']
     default_subject = module.params['default_subject']
     recovery_default_message = module.params['recovery_default_message']
@@ -1588,6 +1663,7 @@ def main():
     acknowledge_default_subject = module.params['acknowledge_default_subject']
     conditions = module.params['conditions']
     formula = module.params['formula']
+    eval_type = module.params['eval_type']
     operations = module.params['operations']
     recovery_operations = module.params['recovery_operations']
     acknowledge_operations = module.params['acknowledge_operations']
@@ -1621,6 +1697,7 @@ def main():
                 event_source=event_source,
                 esc_period=esc_period,
                 status=status,
+                pause_in_maintenance=pause_in_maintenance,
                 default_message=default_message,
                 default_subject=default_subject,
                 recovery_default_message=recovery_default_message,
@@ -1630,7 +1707,7 @@ def main():
                 operations=ops.construct_the_data(operations),
                 recovery_operations=recovery_ops.construct_the_data(recovery_operations),
                 acknowledge_operations=acknowledge_ops.construct_the_data(acknowledge_operations),
-                conditions=fltr.construct_the_data(formula, conditions)
+                conditions=fltr.construct_the_data(eval_type, formula, conditions)
             )
 
             if difference == {}:
@@ -1650,6 +1727,7 @@ def main():
                 event_source=event_source,
                 esc_period=esc_period,
                 status=status,
+                pause_in_maintenance=pause_in_maintenance,
                 default_message=default_message,
                 default_subject=default_subject,
                 recovery_default_message=recovery_default_message,
@@ -1659,7 +1737,7 @@ def main():
                 operations=ops.construct_the_data(operations),
                 recovery_operations=recovery_ops.construct_the_data(recovery_operations),
                 acknowledge_operations=acknowledge_ops.construct_the_data(acknowledge_operations),
-                conditions=fltr.construct_the_data(formula, conditions)
+                conditions=fltr.construct_the_data(eval_type, formula, conditions)
             )
             module.exit_json(changed=True, msg="Action created: %s, ID: %s" % (name, action_id))
 

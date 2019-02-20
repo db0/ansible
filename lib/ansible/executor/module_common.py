@@ -94,6 +94,7 @@ _ANSIBALLZ_WRAPPER = True # For test-module script to tell this is a ANSIBALLZ_W
 # LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE
 # USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 def _ansiballz_main():
+%(rlimit)s
     import os
     import os.path
     import sys
@@ -348,6 +349,22 @@ ANSIBALLZ_COVERAGE_TEMPLATE = '''
         atexit.register(atexit_coverage)
 
         cov.start()
+'''
+
+ANSIBALLZ_RLIMIT_TEMPLATE = '''
+    import resource
+
+    existing_soft, existing_hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+
+    # adjust soft limit subject to existing hard limit
+    requested_soft = min(existing_hard, %(rlimit_nofile)d)
+
+    if requested_soft != existing_soft:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (requested_soft, existing_hard))
+        except ValueError:
+            # some platforms (eg macOS) lie about their hard limit
+            pass
 '''
 
 
@@ -748,7 +765,8 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
                 # the write lock.  Go ahead and read the data from disk
                 # instead of re-creating it.
                 try:
-                    zipdata = open(cached_module_filename, 'rb').read()
+                    with open(cached_module_filename, 'rb') as f:
+                        zipdata = f.read()
                 except IOError:
                     raise AnsibleError('A different worker process failed to create module file. '
                                        'Look at traceback for that process for debugging information.')
@@ -762,6 +780,19 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
         # substituting it into the template as a Python string
         interpreter_parts = interpreter.split(u' ')
         interpreter = u"'{0}'".format(u"', '".join(interpreter_parts))
+
+        # FUTURE: the module cache entry should be invalidated if we got this value from a host-dependent source
+        rlimit_nofile = C.config.get_config_value('PYTHON_MODULE_RLIMIT_NOFILE', variables=task_vars)
+
+        if not isinstance(rlimit_nofile, int):
+            rlimit_nofile = int(templar.template(rlimit_nofile))
+
+        if rlimit_nofile:
+            rlimit = ANSIBALLZ_RLIMIT_TEMPLATE % dict(
+                rlimit_nofile=rlimit_nofile,
+            )
+        else:
+            rlimit = ''
 
         coverage_config = os.environ.get('_ANSIBLE_COVERAGE_CONFIG')
 
@@ -790,6 +821,7 @@ def _find_module_utils(module_name, b_module_data, module_path, module_args, tas
             minute=now.minute,
             second=now.second,
             coverage=coverage,
+            rlimit=rlimit,
         )))
         b_module_data = output.getvalue()
 
